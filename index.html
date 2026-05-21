@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>AI Life Balance Planner</title>
+    <link rel="manifest" href="./manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <style>
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 1; filter: drop-shadow(0 0 5px rgba(59,130,246,0.5)); }
+            50% { opacity: 0.7; filter: drop-shadow(0 0 15px rgba(59,130,246,0.8)); }
+        }
+        .ai-pulse { animation: pulse-soft 3s infinite ease-in-out; }
+    </style>
+</head>
+<body class="bg-[#0B0F19] text-slate-100 font-sans antialiased min-h-screen" 
+      x-data="appState()" x-init="initApp()">
+
+    <div class="max-w-6xl mx-auto px-4 py-6 flex flex-col min-h-screen justify-between gap-6">
+        
+        <!-- HUD -->
+        <header class="bg-[#151D30] border border-slate-800 rounded-3xl p-5 shadow-2xl flex flex-col md:flex-row items-center justify-between gap-6">
+            <div class="flex items-center gap-4">
+                <div class="p-4 bg-slate-900 rounded-2xl border border-slate-700 text-2xl"
+                     :class="isNight ? 'text-amber-400' : 'text-blue-400'">
+                    <i :class="isNight ? 'fa-solid fa-moon' : 'fa-solid fa-sun'"></i>
+                </div>
+                <div>
+                    <h1 class="text-xs uppercase tracking-widest text-slate-400 font-bold">Контекст</h1>
+                    <p class="text-lg font-bold text-white flex items-center gap-2">
+                        <span x-text="contextText">Вечерний фокус</span>
+                        <span class="inline-block w-2 h-2 rounded-full bg-blue-500 ai-pulse"></span>
+                    </p>
+                    <p class="text-xs text-slate-400">ИИ учитывает время суток</p>
+                </div>
+            </div>
+            <div class="relative w-40 h-40 flex items-center justify-center">
+                <svg class="w-full h-full transform -rotate-90" viewBox="0 0 32 32">
+                    <circle cx="16" cy="16" r="14" fill="transparent" stroke="#3b82f6" stroke-width="3" stroke-dasharray="22 88" stroke-dashoffset="0" class="opacity-80"/>
+                    <circle cx="16" cy="16" r="14" fill="transparent" stroke="#10b981" stroke-width="3" stroke-dasharray="22 88" stroke-dashoffset="-22" class="opacity-80"/>
+                    <circle cx="16" cy="16" r="14" fill="transparent" stroke="#f59e0b" stroke-width="3" stroke-dasharray="22 88" stroke-dashoffset="-44" class="opacity-80"/>
+                    <circle cx="16" cy="16" r="14" fill="transparent" stroke="#8b5cf6" stroke-width="3" stroke-dasharray="22 88" stroke-dashoffset="-66" class="opacity-40"/>
+                </svg>
+                <div class="absolute text-center">
+                    <span class="text-2xl font-black text-white" x-text="averageScore">6.4</span>
+                    <p class="text-[9px] uppercase tracking-wider text-slate-400">Баланс</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <button @click="toggleTheme()" class="p-3 bg-slate-900 border border-slate-700 rounded-xl hover:bg-slate-800 transition">
+                    <i class="fa-solid fa-circle-half-stroke"></i>
+                </button>
+                <div class="text-right hidden md:block">
+                    <span class="text-xs text-slate-400 block">Локальный ИИ</span>
+                    <span class="text-xs text-green-400 font-mono font-bold" x-text="aiStatus">Готов (GPU)</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Smart Focus -->
+        <main class="flex-grow flex flex-col justify-center items-center my-4">
+            <template x-if="aiLoading">
+                <div class="text-center ai-pulse">
+                    <i class="fa-solid fa-brain text-5xl text-blue-500 mb-4"></i>
+                    <p class="text-lg font-bold">Загрузка ИИ-модуля...</p>
+                    <p class="text-xs text-slate-400">Первый запуск может занять несколько секунд</p>
+                </div>
+            </template>
+            <template x-if="!aiLoading && currentRecommendation">
+                <div class="w-full max-w-xl bg-gradient-to-br from-[#151D30] to-slate-900 border-2 border-blue-500/30 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+                    <div class="flex justify-between items-start mb-4">
+                        <span class="px-3 py-1 bg-purple-500/20 text-purple-400 border border-purple-500/30 text-xs font-bold rounded-full uppercase tracking-wider">
+                            <i class="fa-solid fa-sparkles"></i> Рекомендация ИИ
+                        </span>
+                        <span class="text-xs text-slate-400 font-mono" x-text="currentRecommendation.category">🌿 Отдых</span>
+                    </div>
+                    <h2 class="text-2xl font-bold text-white mb-6 leading-snug" x-text="currentRecommendation.text">Загрузка...</h2>
+                    <div class="flex gap-4 pt-4 border-t border-slate-800">
+                        <button @click="snoozeTask()" class="flex-1 py-3 px-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-medium rounded-xl transition">
+                            <i class="fa-solid fa-forward text-xs mr-2"></i>Отложить
+                        </button>
+                        <button @click="completeTask()" class="flex-1 py-3 px-4 bg-green-500 hover:bg-emerald-600 active:scale-95 text-white font-bold rounded-xl transition shadow-lg shadow-green-500/20">
+                            <i class="fa-solid fa-check mr-2"></i>Выполнено
+                        </button>
+                    </div>
+                </div>
+            </template>
+            <template x-if="!aiLoading && !currentRecommendation">
+                <div class="text-center p-8 bg-[#151D30] border border-dashed border-slate-700 rounded-3xl max-w-md">
+                    <i class="fa-solid fa-basket-shopping text-4xl text-slate-600 mb-3"></i>
+                    <p class="text-lg font-bold text-slate-300">Корзина пуста</p>
+                    <p class="text-sm text-slate-500 mt-1">Добавьте задачи, и ИИ сам выберет лучшую для выполнения</p>
+                </div>
+            </template>
+        </main>
+
+        <!-- Корзина и ввод -->
+        <footer class="w-full max-w-xl mx-auto flex flex-col gap-4">
+            <div x-show="tasks.length > 0" class="flex justify-between items-center px-4 text-xs text-slate-400">
+                <span class="cursor-pointer hover:text-white transition" @click="showInbox = !showInbox">
+                    <i class="fa-solid" :class="showInbox ? 'fa-chevron-down' : 'fa-chevron-up'"></i>
+                    Всего задач: <strong class="text-slate-200" x-text="tasks.length">0</strong>
+                </span>
+            </div>
+            <div x-show="showInbox && tasks.length > 0" class="bg-[#151D30] border border-slate-800 rounded-2xl p-4 max-h-40 overflow-y-auto flex flex-col gap-2">
+                <template x-for="task in tasks" :key="task.id">
+                    <div class="flex items-center justify-between bg-slate-900/60 p-2.5 rounded-xl border border-slate-800 text-sm">
+                        <span class="text-slate-300 truncate mr-2" x-text="task.text"></span>
+                        <span class="text-[10px] uppercase font-mono px-2 py-0.5 bg-slate-800 text-slate-400 rounded-md shrink-0" x-text="task.category"></span>
+                    </div>
+                </template>
+            </div>
+            <form @submit.prevent="addTask()" class="relative flex items-center">
+                <input type="text" x-model="newTaskText" :disabled="aiLoading"
+                       placeholder="Добавьте задачу (например, «позвонить маме»)..."
+                       class="w-full bg-[#151D30] border-2 border-slate-800 focus:border-blue-500 text-white placeholder-slate-500 rounded-2xl pl-5 pr-14 py-4 text-sm md:text-base outline-none shadow-2xl transition-all disabled:opacity-50">
+                <button type="submit" :disabled="aiLoading" class="absolute right-2 p-3 bg-blue-500 hover:bg-blue-600 disabled:bg-slate-700 text-white rounded-xl transition active:scale-95">
+                    <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                </button>
+            </form>
+        </footer>
+    </div>
+
+    <script>
+        function appState() {
+            return {
+                newTaskText: '',
+                aiLoading: true,
+                aiStatus: 'Инициализация...',
+                isNight: new Date().getHours() > 18 || new Date().getHours() < 6,
+                contextText: '',
+                showInbox: false,
+                averageScore: 6.4,
+                tasks: [],
+                currentRecommendation: null,
+                extractor: null,
+                categoryEmbeddings: null,
+                db: null,
+                categories: [
+                    'Здоровье и спорт',
+                    'Карьера и бизнес',
+                    'Финансы',
+                    'Семья и отношения',
+                    'Друзья и окружение',
+                    'Саморазвитие',
+                    'Яркость жизни и хобби',
+                    'Духовность и отдых'
+                ],
+                wheelState: {
+                    'Здоровье и спорт': 6,
+                    'Карьера и бизнес': 7,
+                    'Финансы': 5,
+                    'Семья и отношения': 6,
+                    'Друзья и окружение': 5,
+                    'Саморазвитие': 6,
+                    'Яркость жизни и хобби': 5,
+                    'Духовность и отдых': 4
+                },
+                get tasksCount() { return this.tasks.length; },
+                async initApp() {
+                    this.contextText = this.isNight ? 'Вечерний фокус' : 'Дневной фокус';
+                    if ('serviceWorker' in navigator) {
+                        window.addEventListener('load', () => {
+                            navigator.serviceWorker.register('./sw.js').then(reg => console.log('SW ok')).catch(() => {});
+                        });
+                    }
+                    try {
+                        await tf.ready();
+                        // динамический импорт модуля Transformers.js
+                        const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1/dist/transformers.min.js');
+                        this.extractor = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small');
+                        await this.encodeCategories();
+                        const { openDB } = await import('https://cdn.jsdelivr.net/npm/idb@8.0.0/+esm');
+                        this.db = await openDB('LifeBalanceDB', 1, {
+                            upgrade(db) {
+                                const tasksStore = db.createObjectStore('tasks', { keyPath: 'id' });
+                                tasksStore.createIndex('status', 'status');
+                                db.createObjectStore('wheel_history', { autoIncrement: true, keyPath: 'timestamp' });
+                            }
+                        });
+                        await this.loadData();
+                        this.aiLoading = false;
+                        this.aiStatus = 'Готов (WebGPU/WASM)';
+                        this.updateRecommendation();
+                    } catch (e) {
+                        console.error(e);
+                        this.aiStatus = 'Ошибка загрузки';
+                        this.aiLoading = false;
+                    }
+                },
+                async encodeCategories() {
+                    const vecs = [];
+                    for (const cat of this.categories) {
+                        const out = await this.extractor(`query: ${cat}`, { pooling: 'mean', normalize: true });
+                        vecs.push(Array.from(out.data));
+                    }
+                    this.categoryEmbeddings = tf.tensor2d(vecs);
+                },
+                async loadData() {
+                    if (!this.db) return;
+                    const allTasks = await this.db.getAll('tasks');
+                    this.tasks = allTasks.filter(t => t.status === 'pending');
+                    const allWheel = await this.db.getAll('wheel_history');
+                    if (allWheel.length > 0) {
+                        const last = allWheel[allWheel.length - 1];
+                        this.wheelState = { ...last.scores };
+                        this.averageScore = (Object.values(last.scores).reduce((a,b)=>a+b,0)/8).toFixed(1);
+                    }
+                },
+                async saveWheelState() {
+                    if (!this.db) return;
+                    await this.db.add('wheel_history', { timestamp: Date.now(), scores: { ...this.wheelState } });
+                },
+                detectPeriodic(text) {
+                    const lower = text.toLowerCase();
+                    const triggers = ['каждый','ежеднев','еженедель','раз в неделю','раз в месяц','по понедельник','по вторник','по сред','по четверг','по пятниц','по суббот','по воскрес','every day','every week','weekly','daily'];
+                    return triggers.some(t => lower.includes(t));
+                },
+                async addTask() {
+                    if (this.aiLoading || !this.extractor) return;
+                    const text = this.newTaskText.trim();
+                    if (!text) return;
+                    if (navigator.vibrate) navigator.vibrate(10);
+                    const id = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+                    const out = await this.extractor(`passage: ${text}`, { pooling: 'mean', normalize: true });
+                    const embedding = Array.from(out.data);
+                    const tfEmb = tf.tensor1d(embedding);
+                    const similarities = tf.matMul(this.categoryEmbeddings, tfEmb.reshape([-1,1])).reshape([-1]);
+                    const scores = await similarities.data();
+                    const maxIdx = tf.argMax(similarities).dataSync()[0];
+                    const category = this.categories[maxIdx];
+                    tfEmb.dispose(); similarities.dispose();
+                    const newTask = {
+                        id, text, embedding, category_scores: Array.from(scores),
+                        status: 'pending', is_periodic: this.detectPeriodic(text),
+                        last_completed_at: null, created_at: Date.now()
+                    };
+                    await this.db.put('tasks', newTask);
+                    this.tasks.push(newTask);
+                    this.newTaskText = '';
+                    this.updateRecommendation();
+                },
+                async completeTask() {
+                    if (!this.currentRecommendation) return;
+                    if (navigator.vibrate) navigator.vibrate([30,50,30]);
+                    const task = this.currentRecommendation;
+                    await this.db.put('tasks', { ...task, status: 'completed', last_completed_at: Date.now() });
+                    if (this.wheelState[task.category] < 10) {
+                        this.wheelState[task.category] = Math.min(10, this.wheelState[task.category] + 0.5);
+                        this.averageScore = (Object.values(this.wheelState).reduce((a,b)=>a+b,0)/8).toFixed(1);
+                        await this.saveWheelState();
+                    }
+                    this.tasks = this.tasks.filter(t => t.id !== task.id);
+                    this.updateRecommendation();
+                },
+                snoozeTask() {
+                    if (this.tasks.length <= 1) return;
+                    const first = this.tasks.shift();
+                    this.tasks.push(first);
+                    this.updateRecommendation();
+                },
+                async updateRecommendation() {
+                    if (this.tasks.length === 0) { this.currentRecommendation = null; return; }
+                    const N = this.tasks.length, C = this.categories.length;
+                    const taskScores = [];
+                    for (let i = 0; i < N; i++) {
+                        const t = this.tasks[i];
+                        let total = 0;
+                        for (let j = 0; j < C; j++) {
+                            const deficit = (10 - this.wheelState[this.categories[j]]) / 10;
+                            const contextFactor = this.getContextFactor(this.categories[j]);
+                            total += t.category_scores[j] * deficit * contextFactor;
+                        }
+                        taskScores.push({ task: t, score: total });
+                    }
+                    taskScores.sort((a,b) => b.score - a.score);
+                    this.currentRecommendation = taskScores[0].task;
+                },
+                getContextFactor(cat) {
+                    const hour = new Date().getHours();
+                    if (cat.includes('Здоровье') || cat.includes('Карьера')) return (hour >= 6 && hour <= 12) ? 1.5 : 0.5;
+                    if (cat.includes('Семья') || cat.includes('Отдых') || cat.includes('Духовность')) return (hour >= 17 || hour < 6) ? 1.5 : 0.5;
+                    return 1.0;
+                },
+                toggleTheme() {
+                    document.documentElement.classList.toggle('dark');
+                }
+            }
+        }
+    </script>
+</body>
+</html>
