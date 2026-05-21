@@ -7,7 +7,11 @@
     <link rel="manifest" href="./manifest.json">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- TensorFlow.js глобально -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+    <!-- Transformers.js глобально (UMD) -->
+    <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1/dist/transformers.min.js"></script>
+    <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
     <style>
         @keyframes pulse-soft {
@@ -17,11 +21,11 @@
         .ai-pulse { animation: pulse-soft 3s infinite ease-in-out; }
     </style>
 </head>
-<body class="bg-[#0B0F19] text-slate-100 font-sans antialiased min-h-screen" 
+<body class="bg-[#0B0F19] text-slate-100 font-sans antialiased min-h-screen"
       x-data="appState()" x-init="initApp()">
 
     <div class="max-w-6xl mx-auto px-4 py-6 flex flex-col min-h-screen justify-between gap-6">
-        
+
         <!-- HUD -->
         <header class="bg-[#151D30] border border-slate-800 rounded-3xl p-5 shadow-2xl flex flex-col md:flex-row items-center justify-between gap-6">
             <div class="flex items-center gap-4">
@@ -56,7 +60,7 @@
                 </button>
                 <div class="text-right hidden md:block">
                     <span class="text-xs text-slate-400 block">Локальный ИИ</span>
-                    <span class="text-xs text-green-400 font-mono font-bold" x-text="aiStatus">Готов (GPU)</span>
+                    <span class="text-xs text-green-400 font-mono font-bold" x-text="aiStatus">Инициализация...</span>
                 </div>
             </div>
         </header>
@@ -138,8 +142,7 @@
                 tasks: [],
                 currentRecommendation: null,
                 extractor: null,
-                categoryEmbeddings: null,
-                db: null,
+                categoryEmbeddings: null, // tf.Tensor2D
                 categories: [
                     'Здоровье и спорт',
                     'Карьера и бизнес',
@@ -160,132 +163,219 @@
                     'Яркость жизни и хобби': 5,
                     'Духовность и отдых': 4
                 },
-                get tasksCount() { return this.tasks.length; },
+
                 async initApp() {
                     this.contextText = this.isNight ? 'Вечерний фокус' : 'Дневной фокус';
+
+                    // Регистрация Service Worker
                     if ('serviceWorker' in navigator) {
-                        window.addEventListener('load', () => {
-                            navigator.serviceWorker.register('./sw.js').then(reg => console.log('SW ok')).catch(() => {});
-                        });
+                        navigator.serviceWorker.register('./sw.js')
+                            .then(reg => console.log('SW ok'))
+                            .catch(err => console.warn('SW регистрация не удалась:', err));
                     }
+
                     try {
+                        // Дожидаемся готовности TensorFlow.js
                         await tf.ready();
-                        // динамический импорт модуля Transformers.js
-                        const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1/dist/transformers.min.js');
-                        this.extractor = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small');
+                        console.log('TF backend:', tf.getBackend());
+
+                        // Глобальная функция pipeline уже доступна через window.pipeline
+                        if (typeof window.pipeline !== 'function') {
+                            throw new Error('Transformers.js не загружен');
+                        }
+
+                        // Загружаем модель эмбеддингов
+                        this.extractor = await window.pipeline('feature-extraction', 'Xenova/multilingual-e5-small');
+                        console.log('Модель E5 загружена');
+
+                        // Предварительно кодируем категории колеса
                         await this.encodeCategories();
-                        const { openDB } = await import('https://cdn.jsdelivr.net/npm/idb@8.0.0/+esm');
-                        this.db = await openDB('LifeBalanceDB', 1, {
-                            upgrade(db) {
-                                const tasksStore = db.createObjectStore('tasks', { keyPath: 'id' });
-                                tasksStore.createIndex('status', 'status');
-                                db.createObjectStore('wheel_history', { autoIncrement: true, keyPath: 'timestamp' });
-                            }
-                        });
+
+                        // Инициализируем IndexedDB (упрощённо, без idb)
+                        await this.initDB();
                         await this.loadData();
+
                         this.aiLoading = false;
-                        this.aiStatus = 'Готов (WebGPU/WASM)';
+                        this.aiStatus = 'Готов (WebGL/WASM)';
                         this.updateRecommendation();
-                    } catch (e) {
-                        console.error(e);
+                    } catch (error) {
+                        console.error('Ошибка инициализации:', error);
                         this.aiStatus = 'Ошибка загрузки';
                         this.aiLoading = false;
                     }
                 },
+
                 async encodeCategories() {
-                    const vecs = [];
+                    const vectors = [];
                     for (const cat of this.categories) {
-                        const out = await this.extractor(`query: ${cat}`, { pooling: 'mean', normalize: true });
-                        vecs.push(Array.from(out.data));
+                        const output = await this.extractor(`query: ${cat}`, { pooling: 'mean', normalize: true });
+                        vectors.push(Array.from(output.data));
                     }
-                    this.categoryEmbeddings = tf.tensor2d(vecs);
+                    this.categoryEmbeddings = tf.tensor2d(vectors); // [8, 384]
                 },
+
+                // Простая обёртка над IndexedDB (обещания)
+                initDB() {
+                    return new Promise((resolve, reject) => {
+                        const request = indexedDB.open('LifeBalanceDB', 1);
+                        request.onupgradeneeded = (event) => {
+                            const db = event.target.result;
+                            if (!db.objectStoreNames.contains('tasks')) {
+                                const tasksStore = db.createObjectStore('tasks', { keyPath: 'id' });
+                                tasksStore.createIndex('status', 'status');
+                            }
+                            if (!db.objectStoreNames.contains('wheel_history')) {
+                                db.createObjectStore('wheel_history', { autoIncrement: true, keyPath: 'timestamp' });
+                            }
+                        };
+                        request.onsuccess = (event) => {
+                            this.db = event.target.result;
+                            resolve();
+                        };
+                        request.onerror = (event) => reject(event.target.error);
+                    });
+                },
+
+                dbOperation(storeName, mode, callback) {
+                    return new Promise((resolve, reject) => {
+                        const tx = this.db.transaction(storeName, mode);
+                        const store = tx.objectStore(storeName);
+                        callback(store, resolve, reject);
+                    });
+                },
+
                 async loadData() {
                     if (!this.db) return;
-                    const allTasks = await this.db.getAll('tasks');
-                    this.tasks = allTasks.filter(t => t.status === 'pending');
-                    const allWheel = await this.db.getAll('wheel_history');
-                    if (allWheel.length > 0) {
-                        const last = allWheel[allWheel.length - 1];
+                    const tasks = await this.dbOperation('tasks', 'readonly', (store, res) => {
+                        const all = store.getAll();
+                        all.onsuccess = () => res(all.result);
+                    });
+                    this.tasks = tasks.filter(t => t.status === 'pending');
+                    
+                    const wheel = await this.dbOperation('wheel_history', 'readonly', (store, res) => {
+                        const all = store.getAll();
+                        all.onsuccess = () => res(all.result);
+                    });
+                    if (wheel.length > 0) {
+                        const last = wheel[wheel.length - 1];
                         this.wheelState = { ...last.scores };
                         this.averageScore = (Object.values(last.scores).reduce((a,b)=>a+b,0)/8).toFixed(1);
                     }
                 },
+
                 async saveWheelState() {
                     if (!this.db) return;
-                    await this.db.add('wheel_history', { timestamp: Date.now(), scores: { ...this.wheelState } });
+                    await this.dbOperation('wheel_history', 'readwrite', (store, res) => {
+                        store.add({ timestamp: Date.now(), scores: { ...this.wheelState } });
+                        res();
+                    });
                 },
+
                 detectPeriodic(text) {
                     const lower = text.toLowerCase();
                     const triggers = ['каждый','ежеднев','еженедель','раз в неделю','раз в месяц','по понедельник','по вторник','по сред','по четверг','по пятниц','по суббот','по воскрес','every day','every week','weekly','daily'];
                     return triggers.some(t => lower.includes(t));
                 },
+
                 async addTask() {
-                    if (this.aiLoading || !this.extractor) return;
+                    if (this.aiLoading || !this.extractor || !this.categoryEmbeddings) return;
                     const text = this.newTaskText.trim();
                     if (!text) return;
                     if (navigator.vibrate) navigator.vibrate(10);
+
                     const id = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-                    const out = await this.extractor(`passage: ${text}`, { pooling: 'mean', normalize: true });
-                    const embedding = Array.from(out.data);
+
+                    // Получаем эмбеддинг задачи
+                    const output = await this.extractor(`passage: ${text}`, { pooling: 'mean', normalize: true });
+                    const embedding = Array.from(output.data);
+
+                    // Сходство с категориями через тензоры
                     const tfEmb = tf.tensor1d(embedding);
                     const similarities = tf.matMul(this.categoryEmbeddings, tfEmb.reshape([-1,1])).reshape([-1]);
                     const scores = await similarities.data();
                     const maxIdx = tf.argMax(similarities).dataSync()[0];
                     const category = this.categories[maxIdx];
-                    tfEmb.dispose(); similarities.dispose();
+                    
+                    tfEmb.dispose();
+                    similarities.dispose();
+
                     const newTask = {
                         id, text, embedding, category_scores: Array.from(scores),
                         status: 'pending', is_periodic: this.detectPeriodic(text),
                         last_completed_at: null, created_at: Date.now()
                     };
-                    await this.db.put('tasks', newTask);
+
+                    // Сохраняем в IndexedDB
+                    await this.dbOperation('tasks', 'readwrite', (store, res) => {
+                        store.put(newTask);
+                        res();
+                    });
+
                     this.tasks.push(newTask);
                     this.newTaskText = '';
                     this.updateRecommendation();
                 },
+
                 async completeTask() {
                     if (!this.currentRecommendation) return;
                     if (navigator.vibrate) navigator.vibrate([30,50,30]);
+
                     const task = this.currentRecommendation;
-                    await this.db.put('tasks', { ...task, status: 'completed', last_completed_at: Date.now() });
+                    task.status = 'completed';
+                    task.last_completed_at = Date.now();
+                    await this.dbOperation('tasks', 'readwrite', (store, res) => {
+                        store.put(task);
+                        res();
+                    });
+
+                    // Обновляем колесо
                     if (this.wheelState[task.category] < 10) {
                         this.wheelState[task.category] = Math.min(10, this.wheelState[task.category] + 0.5);
                         this.averageScore = (Object.values(this.wheelState).reduce((a,b)=>a+b,0)/8).toFixed(1);
                         await this.saveWheelState();
                     }
+
                     this.tasks = this.tasks.filter(t => t.id !== task.id);
                     this.updateRecommendation();
                 },
+
                 snoozeTask() {
                     if (this.tasks.length <= 1) return;
                     const first = this.tasks.shift();
                     this.tasks.push(first);
                     this.updateRecommendation();
                 },
+
                 async updateRecommendation() {
-                    if (this.tasks.length === 0) { this.currentRecommendation = null; return; }
-                    const N = this.tasks.length, C = this.categories.length;
-                    const taskScores = [];
-                    for (let i = 0; i < N; i++) {
-                        const t = this.tasks[i];
+                    if (this.tasks.length === 0) {
+                        this.currentRecommendation = null;
+                        return;
+                    }
+                    const C = this.categories.length;
+                    const taskScores = this.tasks.map(task => {
                         let total = 0;
                         for (let j = 0; j < C; j++) {
                             const deficit = (10 - this.wheelState[this.categories[j]]) / 10;
                             const contextFactor = this.getContextFactor(this.categories[j]);
-                            total += t.category_scores[j] * deficit * contextFactor;
+                            total += task.category_scores[j] * deficit * contextFactor;
                         }
-                        taskScores.push({ task: t, score: total });
-                    }
+                        return { task, score: total };
+                    });
                     taskScores.sort((a,b) => b.score - a.score);
                     this.currentRecommendation = taskScores[0].task;
                 },
+
                 getContextFactor(cat) {
                     const hour = new Date().getHours();
-                    if (cat.includes('Здоровье') || cat.includes('Карьера')) return (hour >= 6 && hour <= 12) ? 1.5 : 0.5;
-                    if (cat.includes('Семья') || cat.includes('Отдых') || cat.includes('Духовность')) return (hour >= 17 || hour < 6) ? 1.5 : 0.5;
+                    if (cat.includes('Здоровье') || cat.includes('Карьера')) {
+                        return (hour >= 6 && hour <= 12) ? 1.5 : 0.5;
+                    }
+                    if (cat.includes('Семья') || cat.includes('Отдых') || cat.includes('Духовность')) {
+                        return (hour >= 17 || hour < 6) ? 1.5 : 0.5;
+                    }
                     return 1.0;
                 },
+
                 toggleTheme() {
                     document.documentElement.classList.toggle('dark');
                 }
